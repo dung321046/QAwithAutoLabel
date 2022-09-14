@@ -18,7 +18,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 from transformers import DefaultDataCollator
 
 data_collator = DefaultDataCollator()
-
+import datasets
 
 def preprocess_function(examples):
     questions = [q.strip() for q in examples["question"]]

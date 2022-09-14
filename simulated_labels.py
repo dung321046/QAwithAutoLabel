@@ -28,8 +28,9 @@ n = len(squad["train"])
 batch_size = 50
 start = 0
 
-label_files = [0, 1, 2]
-partial_label_files = [4, 5, 9]
+label_files = [20]
+partial_label_files = []
+# partial_label_files =[4, 5, 9]
 file_index = 0
 
 while start < n:
