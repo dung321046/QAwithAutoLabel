@@ -1,8 +1,9 @@
 import numpy as np
 import torch
 from transformers import AutoModelForQuestionAnswering, TrainingArguments
-from qa_trainer import QATrainer
+
 import wandb
+from qa_trainer import QATrainer
 
 torch.cuda.empty_cache()
 wandb.login(key="17cc4e6449d9bc429d81a90211f21adf938bd629")
@@ -99,8 +100,7 @@ import pickle
 
 with open("tokenized_squad.pk", "rb") as fr:
     tokenized_squad = pickle.load(fr)
-print(type(tokenized_squad))
-print(tokenized_squad)
+
 training_args = TrainingArguments(
     output_dir="./results",
     evaluation_strategy="epoch",
@@ -142,6 +142,6 @@ for i in range(n):
 print("Acc start", sum(start_acc) / n)
 print("Acc end", sum(end_acc) / n)
 accs = [end_acc[i] and start_acc[i] for i in range(n)]
-wandb.log({"acc": sum(accs) / n})
+wandb.log({"Valid Acc": sum(accs) / n})
 print("Acc:", sum(accs) / n)
 trainer.save_model(model_name + "_active00")
