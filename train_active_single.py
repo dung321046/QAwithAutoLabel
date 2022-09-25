@@ -1,147 +1,79 @@
+import pickle
+import random
+
 import numpy as np
 import torch
 from transformers import AutoModelForQuestionAnswering, TrainingArguments
+from transformers import AutoTokenizer
+from transformers import DefaultDataCollator
 
 import wandb
 from qa_trainer import QATrainer
+from utils import get_accuracy
 
-torch.cuda.empty_cache()
-wandb.login(key="17cc4e6449d9bc429d81a90211f21adf938bd629")
-wandb.init()
-run_name = wandb.run.name
 model_name = "srcocotero/tiny-bert-qa"
 model = AutoModelForQuestionAnswering.from_pretrained(model_name)
-
-from transformers import AutoTokenizer
-
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-from transformers import DefaultDataCollator
-
 data_collator = DefaultDataCollator()
 
-
-def preprocess_function(examples):
-    questions = [q.strip() for q in examples["question"]]
-    inputs = tokenizer(
-        questions,
-        examples["context"],
-        max_length=384,
-        truncation="only_second",
-        return_offsets_mapping=True,
-        padding="max_length",
-    )
-    inputs["id"] = examples["id"]
-    inputs["context"] = examples["context"]
-    inputs["questions"] = questions
-    offset_mapping = inputs.pop("offset_mapping")
-    answers = examples["answers"]
-    start_positions = []
-    end_positions = []
-
-    for i, offset in enumerate(offset_mapping):
-        answer = answers[i]
-        start_char = answer["answer_start"][0]
-        end_char = answer["answer_start"][0] + len(answer["text"][0])
-        sequence_ids = inputs.sequence_ids(i)
-
-        # Find the start and end of the context
-        idx = 0
-        while sequence_ids[idx] != 1:
-            idx += 1
-        context_start = idx
-        while sequence_ids[idx] == 1:
-            idx += 1
-        context_end = idx - 1
-
-        # If the answer is not fully inside the context, label it (0, 0)
-        if offset[context_start][0] > end_char or offset[context_end][1] < start_char:
-            start_positions.append(0)
-            end_positions.append(0)
-        else:
-            # Otherwise it's the start and end token positions
-            idx = context_start
-            while idx <= context_end and offset[idx][0] <= start_char:
-                idx += 1
-            start_positions.append(idx - 1)
-
-            idx = context_end
-            while idx >= context_start and offset[idx][1] >= end_char:
-                idx -= 1
-            end_positions.append(idx + 1)
-
-    inputs["start_positions"] = start_positions
-    inputs["end_positions"] = end_positions
-    return inputs
-
-
-DATA_PATH = "./data"
-
-import openpyxl
-
-
-def read_labeled_idx(file_index, start_idx):
-    file_name = DATA_PATH + "/qa_sample_" + str(file_index).zfill(4) + ".xlsx"
-    idx = []
-    n = 0
-    workbook = openpyxl.load_workbook(file_name)
-    worksheet = workbook["Sheet1"]
-    for i in range(100):
-        answer = worksheet.cell(row=i + 2, column=3).value
-        context = worksheet.cell(row=i + 2, column=1).value
-        if context is None:
-            break
-        n += 1
-        if answer:
-            idx.append(start_idx + i)
-    return idx, n
-
-
-import pickle
-
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 with open("tokenized_squad.pk", "rb") as fr:
     tokenized_squad = pickle.load(fr)
-
+learning_rate = 5e-5
+num_train_epochs = 100
+weight_decay = 0.00
+seed_number = 17
 training_args = TrainingArguments(
     output_dir="./results",
     evaluation_strategy="epoch",
-    learning_rate=2e-5,
+    learning_rate=learning_rate,
     per_device_train_batch_size=16,
     per_device_eval_batch_size=16,
-    num_train_epochs=1000,
-    weight_decay=0.01,
+    num_train_epochs=num_train_epochs,
+    weight_decay=weight_decay,
 )
-subtrain_idx = []
-start_idx = 0
-for i in range(20):
-    idx, nrecord = read_labeled_idx(i, start_idx)
-    subtrain_idx.extend(idx)
-    start_idx += nrecord
-subtrain = tokenized_squad["train"].select(subtrain_idx)
-subtest = tokenized_squad["validation"].select(range(100))
-
+n = len(tokenized_squad["train"])
+np.random.seed(seed_number)
+random.seed(seed_number)
+number_of_labels = 2000
+sample_idx = random.sample(range(n), number_of_labels)
+subtrain = tokenized_squad["train"].select(sample_idx)
+m = len(tokenized_squad["validation"])
+sample_test_idx = random.sample(range(m), 200)
+valid = tokenized_squad["validation"].select(sample_test_idx)
 trainer = QATrainer(
     model=model,
     args=training_args,
     train_dataset=subtrain,
-    eval_dataset=subtest,
+    eval_dataset=valid,
     tokenizer=tokenizer,
     data_collator=data_collator,
 )
+model.cuda()
+valid_inputs = torch.tensor(valid["input_ids"], dtype=torch.int).cuda()
+valid_att_mask = torch.tensor(valid["attention_mask"]).cuda()
+predict = model(valid_inputs, attention_mask=valid_att_mask)
+s_acc, e_acc, acc = get_accuracy(valid, predict)
 
-trainer.train()
-predict = trainer.predict(subtest)
-start_pred = np.argmax(predict.predictions[0], axis=1)
-end_pred = np.argmax(predict.predictions[1], axis=1)
-n = len(start_pred)
-start_acc, end_acc = np.zeros(n), np.zeros(n)
-for i in range(n):
-    if start_pred[i] == predict.label_ids[0][i]:
-        start_acc[i] = 1
-    if end_pred[i] == predict.label_ids[1][i]:
-        end_acc[i] = 1
-print("Acc start", sum(start_acc) / n)
-print("Acc end", sum(end_acc) / n)
-accs = [end_acc[i] and start_acc[i] for i in range(n)]
-wandb.log({"Valid Acc": sum(accs) / n})
-print("Acc:", sum(accs) / n)
-trainer.save_model(model_name + "_active00")
+wandb.login(key="17cc4e6449d9bc429d81a90211f21adf938bd629")
+wandb.init()
+run_name = wandb.run.name
+wandb.define_metric("valid_step")
+wandb.define_metric("Valid sAcc", step_metric="valid_step")
+wandb.define_metric("Valid eAcc", step_metric="valid_step")
+wandb.define_metric("Valid Acc", step_metric="valid_step")
+wandb.define_metric("Cost", step_metric="valid_step")
+wandb.log({"weight_decay": weight_decay, "learning_rate": learning_rate, "num_train_epochs": num_train_epochs,
+           "seed_number": seed_number})
+wandb.log({"Valid sAcc": s_acc, "Valid eAcc": e_acc,
+           "Cost": 0,
+           "Valid Acc": acc,
+           "valid_step": 0})
+for global_step in range(10):
+    trainer.train()
+    predict = model(valid_inputs, attention_mask=valid_att_mask)
+    s_acc, e_acc, acc = get_accuracy(valid, predict)
+    wandb.log({"Valid sAcc": s_acc, "Valid eAcc": e_acc,
+               "Cost": number_of_labels,
+               "Valid Acc": acc,
+               "valid_step": global_step + 1})
+trainer.save_model(model_name + "-" + run_name)

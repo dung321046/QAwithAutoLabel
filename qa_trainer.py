@@ -417,8 +417,6 @@ class QATrainer(Trainer):
         self.store_flos()
         metrics["total_flos"] = self.state.total_flos
         metrics["train_loss"] = train_loss
-        # metrics["start_acc"] = start_cor / n
-        # metrics["end_acc"] = end_cor / n
         self.is_in_train = False
 
         self._memory_tracker.stop_and_update_metrics(metrics)

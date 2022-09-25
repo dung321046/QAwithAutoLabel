@@ -2,19 +2,6 @@ import numpy as np
 import torch
 
 
-def get_accuracy(dataset, predict):
-    start_pred = torch.argmax(predict["start_logits"], dim=1)
-    end_pred = torch.argmax(predict["end_logits"], dim=1)
-    n = len(dataset["start_positions"])
-    start_acc, end_acc = np.zeros(n), np.zeros(n)
-    for i in range(n):
-        if start_pred[i] == dataset["start_positions"][i]:
-            start_acc[i] = 1
-        if end_pred[i] == dataset["end_positions"][i]:
-            end_acc[i] = 1
-    accs = [end_acc[i] and start_acc[i] for i in range(n)]
-    return sum(start_acc) / n, sum(end_acc) / n, sum(accs) / n
-
 
 def get_entropy_from_logit(logits):
     from scipy.stats import entropy
@@ -47,6 +34,6 @@ if __name__ == "__main__":
                         attention_mask=torch.tensor(subtrain["attention_mask"]))
     print(output["last_hidden_state"])
     print("Embedding:", output["last_hidden_state"][:, 0, :])
-    start_acc, end_acc, o_acc = get_accuracy(subtrain, predict)
-    print("Start-End-Overall Accuracy", start_acc, end_acc, o_acc)
+    # start_acc, end_acc, o_acc = get_accuracy(subtrain, predict)
+    # print("Start-End-Overall Accuracy", start_acc, end_acc, o_acc)
     print(get_highest_entropy(predict, 10))
