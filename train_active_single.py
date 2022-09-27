@@ -34,7 +34,7 @@ training_args = TrainingArguments(
 n = len(tokenized_squad["train"])
 np.random.seed(seed_number)
 random.seed(seed_number)
-number_of_labels = 2000
+number_of_labels = 1000
 sample_idx = random.sample(range(n), number_of_labels)
 subtrain = tokenized_squad["train"].select(sample_idx)
 m = len(tokenized_squad["validation"])

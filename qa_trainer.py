@@ -378,8 +378,8 @@ class QATrainer(Trainer):
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
             self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval)
             metrics = dict()
-            metrics["start_acc"] = start_cor / n
-            metrics["end_acc"] = end_cor / n
+            metrics["start_acc"] = float(start_cor / n)
+            metrics["end_acc"] = float(end_cor / n)
             self.log(metrics)
             if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
                 if is_torch_tpu_available():

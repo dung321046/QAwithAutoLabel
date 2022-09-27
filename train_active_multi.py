@@ -1,127 +1,125 @@
+import argparse
+import pickle
+import random
+
 import numpy as np
 import torch
 from transformers import AutoModelForQuestionAnswering, TrainingArguments
+from transformers import AutoTokenizer
+from transformers import DefaultDataCollator
 
 import wandb
 from qa_trainer import QATrainer
+from utils import get_accuracy
 
-torch.cuda.empty_cache()
-wandb.login(key="17cc4e6449d9bc429d81a90211f21adf938bd629")
-wandb.init()
-run_name = wandb.run.name
+parser = argparse.ArgumentParser("Active Learning Arguments")
+parser.add_argument('--seed', type=int, default=1, help="random seed")
+parser.add_argument('--n_init_labeled', type=int, default=20, help="number of init labeled samples")
+parser.add_argument('--n_query', type=int, default=20, help="number of queries per round")
+parser.add_argument('--n_round', type=int, default=10, help="number of rounds")
+parser.add_argument('--dataset_name', type=str, default="IMDB", choices=["IMDB"], help="dataset")
+parser.add_argument('--strategy_name', type=str, default="RandomSampling",
+                    choices=["RandomSampling",
+                             "LeastConfidence",
+                             "MarginSampling",
+                             "EntropySampling",
+                             "LeastConfidenceDropout",
+                             "MarginSamplingDropout",
+                             "EntropySamplingDropout",
+                             "KMeansSampling",
+                             "KCenterGreedy",
+                             "BALDDropout",
+                             "AdversarialBIM",
+                             "AdversarialDeepFool"], help="query strategy")
+
+args = parser.parse_args()
 model_name = "srcocotero/tiny-bert-qa"
-
-from transformers import AutoTokenizer
-
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-from transformers import DefaultDataCollator
-
+model = AutoModelForQuestionAnswering.from_pretrained(model_name)
 data_collator = DefaultDataCollator()
 
-
-def preprocess_function(examples):
-    questions = [q.strip() for q in examples["question"]]
-    inputs = tokenizer(
-        questions,
-        examples["context"],
-        max_length=384,
-        truncation="only_second",
-        return_offsets_mapping=True,
-        padding="max_length",
-    )
-    inputs["id"] = examples["id"]
-    inputs["context"] = examples["context"]
-    inputs["questions"] = questions
-    offset_mapping = inputs.pop("offset_mapping")
-    answers = examples["answers"]
-    start_positions = []
-    end_positions = []
-
-    for i, offset in enumerate(offset_mapping):
-        answer = answers[i]
-        start_char = answer["answer_start"][0]
-        end_char = answer["answer_start"][0] + len(answer["text"][0])
-        sequence_ids = inputs.sequence_ids(i)
-
-        # Find the start and end of the context
-        idx = 0
-        while sequence_ids[idx] != 1:
-            idx += 1
-        context_start = idx
-        while sequence_ids[idx] == 1:
-            idx += 1
-        context_end = idx - 1
-
-        # If the answer is not fully inside the context, label it (0, 0)
-        if offset[context_start][0] > end_char or offset[context_end][1] < start_char:
-            start_positions.append(0)
-            end_positions.append(0)
-        else:
-            # Otherwise it's the start and end token positions
-            idx = context_start
-            while idx <= context_end and offset[idx][0] <= start_char:
-                idx += 1
-            start_positions.append(idx - 1)
-
-            idx = context_end
-            while idx >= context_start and offset[idx][1] >= end_char:
-                idx -= 1
-            end_positions.append(idx + 1)
-
-    inputs["start_positions"] = start_positions
-    inputs["end_positions"] = end_positions
-    return inputs
-
-
-DATA_PATH = "./data"
-
-import pickle
-
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 with open("tokenized_squad.pk", "rb") as fr:
     tokenized_squad = pickle.load(fr)
-print(type(tokenized_squad))
-print(tokenized_squad)
+learning_rate = 5e-5
+num_train_epochs = 10
+weight_decay = 0.00
+seed_number = 17
 training_args = TrainingArguments(
     output_dir="./results",
     evaluation_strategy="epoch",
-    # learning_rate=2e-5,
-    learning_rate=1e-4,
+    learning_rate=learning_rate,
     per_device_train_batch_size=16,
     per_device_eval_batch_size=16,
-    num_train_epochs=1000,
-    weight_decay=0.01,
+    num_train_epochs=num_train_epochs,
+    weight_decay=weight_decay,
 )
-subtrain_idx = []
-
-subtrain = tokenized_squad["train"].select(subtrain_idx)
-subtest = tokenized_squad["validation"].select(range(100))
-# model = AutoModelForQuestionAnswering.from_pretrained(model_name)
-model = AutoModelForQuestionAnswering.from_pretrained("./srcocotero/tiny-bert-qa_run00/")
-
-# model.load_model("./srcocotero/tiny-bert-qa_active00")
+n = len(tokenized_squad["train"])
+np.random.seed(seed_number)
+random.seed(seed_number)
+N = 10000
+all_idx = random.sample(range(n), N)
+all_data = tokenized_squad["train"].select(all_idx)
+remaining_idx = range(N)
+number_of_labels = 20
+train_idx = np.random.choice(remaining_idx, size=args.n_init_labeled, replace=False)
+remaining_idx = list(set(remaining_idx) - set(train_idx))
 trainer = QATrainer(
     model=model,
     args=training_args,
-    train_dataset=subtrain,
-    eval_dataset=subtest,
+    train_dataset=all_data.select(train_idx),
     tokenizer=tokenizer,
     data_collator=data_collator,
 )
+model.cuda()
+valid_inputs = torch.tensor(all_data["input_ids"], dtype=torch.int).cuda()
+valid_att_mask = torch.tensor(all_data["attention_mask"]).cuda()
+predict = model(valid_inputs, attention_mask=valid_att_mask)
+s_acc, e_acc, acc = get_accuracy(all_data, predict)
 
-trainer.train()
-predict = trainer.predict(subtest)
-start_pred = np.argmax(predict.predictions[0], axis=1)
-end_pred = np.argmax(predict.predictions[1], axis=1)
-n = len(start_pred)
-start_acc, end_acc = np.zeros(n), np.zeros(n)
-for i in range(n):
-    if start_pred[i] == predict.label_ids[0][i]:
-        start_acc[i] = 1
-    if end_pred[i] == predict.label_ids[1][i]:
-        end_acc[i] = 1
-print("Acc start", sum(start_acc) / n)
-print("Acc end", sum(end_acc) / n)
-accs = [end_acc[i] and start_acc[i] for i in range(n)]
-wandb.log({"Valid Acc": sum(accs) / n})
-print("Acc:", sum(accs) / n)
-trainer.save_model(model_name + "_active03")
+if __name__ == "__main__":
+    wandb.login(key="17cc4e6449d9bc429d81a90211f21adf938bd629")
+    wandb.init()
+    run_name = wandb.run.name
+    wandb.define_metric("valid_step")
+    wandb.define_metric("Valid sAcc", step_metric="valid_step")
+    wandb.define_metric("Valid eAcc", step_metric="valid_step")
+    wandb.define_metric("Valid Acc", step_metric="valid_step")
+    wandb.define_metric("Cost", step_metric="valid_step")
+    wandb.log({"weight_decay": weight_decay, "learning_rate": learning_rate, "num_train_epochs": num_train_epochs,
+               "seed_number": seed_number})
+    wandb.log({"Valid sAcc": s_acc, "Valid eAcc": e_acc,
+               "Cost": 0,
+               "Valid Acc": acc,
+               "valid_step": 0})
+    for global_step in range(args.n_round + 1):
+        # Inference all data
+        predict = model(valid_inputs, attention_mask=valid_att_mask)
+        s_acc, e_acc, acc = get_accuracy(all_data, predict)
+        # Logging acc of all data
+        wandb.log({"Valid sAcc": s_acc, "Valid eAcc": e_acc,
+                   "Cost": number_of_labels,
+                   "Valid Acc": acc,
+                   "valid_step": global_step + 1})
+        # We records the accuracy of the last step and exit
+        if global_step == args.n_round:
+            break
+        # Select training sample
+        if args.strategy_name == "RandomSampling":
+            new_idx = np.random.choice(remaining_idx, size=args.n_query, replace=False)
+        else:
+            import active_strategy
+
+            order_idx = active_strategy.get_highest_entropy(predict, N)[::-1]
+            new_idx = []
+            for id in order_idx:
+                if id in remaining_idx:
+                    new_idx.append(id)
+                    if len(new_idx) == args.n_query:
+                        break
+        train_idx = np.concatenate([train_idx, new_idx])
+        remaining_idx = list(set(remaining_idx) - set(train_idx))
+        trainer = QATrainer(model=model, args=training_args, train_dataset=all_data.select(train_idx),
+                            tokenizer=tokenizer, data_collator=data_collator)
+        trainer.train()
+
+    trainer.save_model(model_name + "-" + run_name)
