@@ -3,6 +3,20 @@ import torch
 import xlsxwriter
 
 
+def get_num_corrects(dataset, predict):
+    start_pred = torch.argmax(predict["start_logits"], dim=1)
+    end_pred = torch.argmax(predict["end_logits"], dim=1)
+    n = len(dataset["start_positions"])
+    start_acc, end_acc = np.zeros(n), np.zeros(n)
+    for i in range(n):
+        if start_pred[i] == dataset["start_positions"][i]:
+            start_acc[i] = 1
+        if end_pred[i] == dataset["end_positions"][i]:
+            end_acc[i] = 1
+    accs = [end_acc[i] * start_acc[i] for i in range(n)]
+    return sum(start_acc), sum(end_acc), sum(accs)
+
+
 def get_accuracy(dataset, predict):
     start_pred = torch.argmax(predict["start_logits"], dim=1)
     end_pred = torch.argmax(predict["end_logits"], dim=1)
