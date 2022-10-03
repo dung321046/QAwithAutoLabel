@@ -30,22 +30,22 @@ def inference(model, data, idx):
     num = len(idx)
     batch_size = 16
     num_batch = int(math.ceil(1.0 * num / batch_size))
-    entropies = []
+    embeddings = []
     acc_stat = np.zeros(3)
     for batch_idx in range(num_batch):
         sub_idx = idx[batch_idx * batch_size: min((batch_idx + 1) * batch_size, num)]
         sub_input = data.select(sub_idx)
         with torch.no_grad():
-            sub_predict = model(torch.tensor(sub_input["input_ids"], dtype=torch.int).cuda(),
-                                attention_mask=torch.tensor(sub_input["attention_mask"]).cuda())
-            # sub_last_layer = model.bert(torch.tensor(sub_input["input_ids"], dtype=torch.int).cuda(),
+            # sub_predict = model(torch.tensor(sub_input["input_ids"], dtype=torch.int).cuda(),
             #                     attention_mask=torch.tensor(sub_input["attention_mask"]).cuda())
-            sub_entropy = get_entropy(sub_predict)
-            entropies.extend(sub_entropy)
+            sub_last_layer = model.bert(torch.tensor(sub_input["input_ids"], dtype=torch.int).cuda(),
+                                        attention_mask=torch.tensor(sub_input["attention_mask"]).cuda())
+            embeddings.extend(sub_last_layer)
+            sub_predict = []
             b_acc_stat = get_num_corrects(sub_input, sub_predict)
             acc_stat = [sum(i) for i in zip(acc_stat, b_acc_stat)]
     acc_stat = [cor / num for cor in acc_stat]
-    return acc_stat, entropies
+    return acc_stat, embeddings
 
 
 parser = argparse.ArgumentParser("Active Learning Arguments")
@@ -54,19 +54,10 @@ parser.add_argument('--n_init_labeled', type=int, default=1000, help="number of 
 parser.add_argument('--n_query', type=int, default=200, help="number of queries per round")
 parser.add_argument('--n_round', type=int, default=20, help="number of rounds")
 parser.add_argument('--dataset_name', type=str, default="IMDB", choices=["IMDB"], help="dataset")
-parser.add_argument('--strategy_name', type=str, default="EntropySampling",
+parser.add_argument('--strategy_name', type=str, default="KCenterGreedy",
                     choices=["RandomSampling",
-                             "LeastConfidence",
-                             "MarginSampling",
-                             "EntropySampling",
-                             "LeastConfidenceDropout",
-                             "MarginSamplingDropout",
-                             "EntropySamplingDropout",
-                             "KMeansSampling",
                              "KCenterGreedy",
-                             "BALDDropout",
-                             "AdversarialBIM",
-                             "AdversarialDeepFool"], help="query strategy")
+                             ], help="query strategy")
 
 args = parser.parse_args()
 model_name = "srcocotero/tiny-bert-qa"
@@ -107,6 +98,7 @@ trainer = QATrainer(
     tokenizer=tokenizer,
     data_collator=data_collator,
 )
+acc_stat, entropies = inference(model, all_data, range(number_of_data))
 trainer.train()
 model.cuda()
 acc_stat, entropies = inference(model, all_data, range(number_of_data))
