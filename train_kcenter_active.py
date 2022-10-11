@@ -5,6 +5,7 @@ import random
 
 import numpy as np
 import torch
+from sklearn.metrics import pairwise_distances
 from transformers import AutoModelForQuestionAnswering, TrainingArguments
 from transformers import AutoTokenizer
 from transformers import DefaultDataCollator
@@ -12,6 +13,67 @@ from transformers import DefaultDataCollator
 import wandb
 from qa_trainer import QATrainer
 from utils import get_num_corrects
+
+
+class kCenterGreedy:
+    def __init__(self, features, metric='euclidean'):
+        self.features = features
+        self.name = 'kcenter'
+        self.metric = metric
+        self.min_distances = None
+
+    def update_distances(self, cluster_centers, only_new=True):
+        """Update min distances given cluster centers.
+        Args:
+          cluster_centers: indices of cluster centers
+          only_new: only calculate distance for newly selected points and update
+            min_distances.
+          rest_dist: whether to reset min_distances.
+        """
+
+        if only_new:
+            cluster_centers = [d for d in cluster_centers
+                               if d not in self.already_selected]
+        # Update min_distances for all examples given new cluster center.
+        x = self.features[cluster_centers]
+        dist = pairwise_distances(self.features, x, metric=self.metric)
+        if self.min_distances is None:
+            self.min_distances = np.min(dist, axis=1)
+        else:
+            self.min_distances = np.minimum(self.min_distances, np.squeeze(dist))
+
+    def select_batch_(self, features, already_selected, N):
+        """
+        Diversity promoting active learning method that greedily forms a batch
+        to minimize the maximum distance to a cluster center among all unlabeled
+        datapoints.
+        Args:
+          model: model with scikit-like API with decision_function implemented
+          already_selected: index of datapoints already selected
+          N: batch size
+        Returns:
+          indices of points selected to minimize distance to cluster centers
+        """
+        self.already_selected = already_selected
+
+        print('Getting transformed features...')
+        self.features = features
+        print('Calculating distances...')
+        self.update_distances(already_selected, only_new=False)
+        new_batch = []
+        for _ in range(N):
+            ind = np.argmax(self.min_distances)
+            # New examples should not be in already selected since those points
+            # should have min_distance of zero to a cluster center.
+            assert ind not in already_selected
+            self.update_distances([ind], only_new=True)
+            new_batch.append(ind)
+        print('Maximum distance from cluster centers is %0.2f'
+              % max(self.min_distances))
+
+        self.already_selected = already_selected
+
+        return new_batch
 
 
 def get_entropy_from_logit(logits):
@@ -36,15 +98,15 @@ def inference(model, data, idx):
         sub_idx = idx[batch_idx * batch_size: min((batch_idx + 1) * batch_size, num)]
         sub_input = data.select(sub_idx)
         with torch.no_grad():
-            # sub_predict = model(torch.tensor(sub_input["input_ids"], dtype=torch.int).cuda(),
-            #                     attention_mask=torch.tensor(sub_input["attention_mask"]).cuda())
+            sub_predict = model(torch.tensor(sub_input["input_ids"], dtype=torch.int).cuda(),
+                                attention_mask=torch.tensor(sub_input["attention_mask"]).cuda())
             sub_last_layer = model.bert(torch.tensor(sub_input["input_ids"], dtype=torch.int).cuda(),
                                         attention_mask=torch.tensor(sub_input["attention_mask"]).cuda())
-            embeddings.extend(sub_last_layer)
-            sub_predict = []
+            embeddings.extend(sub_last_layer['last_hidden_state'][:, 0, :].detach().cpu().numpy())
             b_acc_stat = get_num_corrects(sub_input, sub_predict)
             acc_stat = [sum(i) for i in zip(acc_stat, b_acc_stat)]
     acc_stat = [cor / num for cor in acc_stat]
+    embeddings = np.asarray(embeddings)
     return acc_stat, embeddings
 
 
@@ -98,10 +160,10 @@ trainer = QATrainer(
     tokenizer=tokenizer,
     data_collator=data_collator,
 )
-acc_stat, entropies = inference(model, all_data, range(number_of_data))
+acc_stat, embeddings = inference(model, all_data, range(number_of_data))
 trainer.train()
 model.cuda()
-acc_stat, entropies = inference(model, all_data, range(number_of_data))
+acc_stat, embeddings = inference(model, all_data, range(number_of_data))
 if __name__ == "__main__":
     wandb.login(key="17cc4e6449d9bc429d81a90211f21adf938bd629")
     wandb.init(project="QAwithAutoLabel", entity="henry93")
@@ -117,7 +179,7 @@ if __name__ == "__main__":
                "Cost": len(train_idx), "valid_step": 0})
     for global_step in range(args.n_round + 1):
         # Inference all data
-        acc_stat, entropies = inference(model, all_data, range(number_of_data))
+        acc_stat, embeddings = inference(model, all_data, range(number_of_data))
         # Logging acc of all data
         wandb.log({"Valid sAcc": acc_stat[0], "Valid eAcc": acc_stat[1], "Valid Acc": acc_stat[2],
                    "Cost": len(train_idx), "valid_step": global_step + 1})
@@ -128,13 +190,8 @@ if __name__ == "__main__":
         if args.strategy_name == "RandomSampling":
             new_idx = np.random.choice(remaining_idx, size=args.n_query, replace=False)
         else:
-            sorted_idx = np.argsort(entropies)
-            new_idx = []
-            for id in sorted_idx[::-1]:
-                if id in remaining_idx:
-                    new_idx.append(id)
-                    if len(new_idx) == args.n_query:
-                        break
+            coreset = kCenterGreedy(embeddings)
+            new_idx = coreset.select_batch_(embeddings, train_idx, args.n_query)
         train_idx = np.concatenate([train_idx, new_idx])
         remaining_idx = list(set(remaining_idx) - set(train_idx))
         trainer = QATrainer(model=model, args=training_args, train_dataset=all_data.select(train_idx),

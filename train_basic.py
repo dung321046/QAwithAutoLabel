@@ -78,17 +78,7 @@ all_data = tokenized_squad["train"].select(sample_data)
 number_of_labels = 5000
 sample_train = random.sample(range(number_of_data), number_of_labels)
 train_data = all_data.select(sample_train)
-m = len(tokenized_squad["validation"])
-sample_test_idx = random.sample(range(m), 200)
 
-trainer = QATrainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_data,
-    eval_dataset=all_data,
-    tokenizer=tokenizer,
-    data_collator=data_collator,
-)
 model.cuda()
 acc_stat, entropies = inference(model, all_data, range(number_of_data))
 
@@ -107,6 +97,14 @@ wandb.log({"weight_decay": weight_decay, "learning_rate": learning_rate, "num_tr
 wandb.log({"Valid sAcc": acc_stat[0], "Valid eAcc": acc_stat[1], "Valid Acc": acc_stat[2],
            "Cost": number_of_labels, "valid_step": 0})
 for global_step in range(20):
+    trainer = QATrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_data,
+        eval_dataset=all_data,
+        tokenizer=tokenizer,
+        data_collator=data_collator,
+    )
     trainer.train()
     # Inference all data
     acc_stat, entropies = inference(model, all_data, range(number_of_data))

@@ -50,8 +50,8 @@ def inference(model, data, idx):
 
 parser = argparse.ArgumentParser("Active Learning Arguments")
 parser.add_argument('--seed', type=int, default=1, help="random seed")
-parser.add_argument('--n_init_labeled', type=int, default=1000, help="number of init labeled samples")
-parser.add_argument('--n_query', type=int, default=200, help="number of queries per round")
+parser.add_argument('--n_init_labeled', type=int, default=100, help="number of init labeled samples")
+parser.add_argument('--n_query', type=int, default=50, help="number of queries per round")
 parser.add_argument('--n_round', type=int, default=20, help="number of rounds")
 parser.add_argument('--dataset_name', type=str, default="IMDB", choices=["IMDB"], help="dataset")
 parser.add_argument('--strategy_name', type=str, default="EntropySampling",
@@ -92,7 +92,7 @@ training_args = TrainingArguments(
 n = len(tokenized_squad["train"])
 np.random.seed(seed_number)
 random.seed(seed_number)
-number_of_data = 10000
+number_of_data = 2000
 all_idx = random.sample(range(n), number_of_data)
 all_data = tokenized_squad["train"].select(all_idx)
 
@@ -125,7 +125,9 @@ if __name__ == "__main__":
                "Cost": len(train_idx), "valid_step": 0})
     for global_step in range(args.n_round + 1):
         # Inference all data
+        print(global_step)
         acc_stat, entropies = inference(model, all_data, range(number_of_data))
+        print(entropies)
         # Logging acc of all data
         wandb.log({"Valid sAcc": acc_stat[0], "Valid eAcc": acc_stat[1], "Valid Acc": acc_stat[2],
                    "Cost": len(train_idx), "valid_step": global_step + 1})
